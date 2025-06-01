@@ -11,30 +11,25 @@ async function calculateAndDistributeTeamROI(userId, totalROI) {
   try {
     let currentUserId = userId;
 
-    // Loop through the levels and calculate ROI for each referrer in the hierarchy
     for (let level = 1; level <= maxLevels; level++) {
-      // Find the current user's details
       const currentUser = await User.findOne({ userId: currentUserId });
       if (!currentUser || currentUser.referrer === "TNT00001") {
-        break; // Stop if no referrer or root referrer found
+        break;
       }
 
       const referrerId = currentUser.referrer;
 
-      // Validate active directs for each level
+      // NEW: Validate against your Bonus thresholds
       const validDirects = await validateActiveDirect(referrerId, level);
       if (!validDirects) {
-        console.log(`User ${referrerId} does not have enough active directs at level ${level}`);
-        break; // Stop if the referrer does not meet the active directs condition
+        console.log(`User ${referrerId} does not meet bonus criteria at level ${level}`);
+        break;
       }
 
-      const distributionPercentage = getDistributionPercentage(level); // Get the distribution percentage based on the level
+      const distributionPercentage = getDistributionPercentage(level);
       const distributionAmount = (totalROI * distributionPercentage) / 100;
 
-      // Check if referrer has an active package
-      const isActive = await hasPackage(referrerId);
-      if (isActive) {
-        // Perform wallet transaction if referrer is active
+      if (await hasPackage(referrerId)) {
         await performWalletTransaction(
           referrerId,
           distributionAmount,
@@ -49,9 +44,8 @@ async function calculateAndDistributeTeamROI(userId, totalROI) {
           `Team Commission - from level ${level} By ${userId}`,
           "Completed"
         );
-      } 
+      }
 
-      // Move to the next referrer in the hierarchy
       currentUserId = referrerId;
     }
 
@@ -66,12 +60,10 @@ async function calculateAndDistributeTeamROI(userId, totalROI) {
  */
 function getDistributionPercentage(level) {
   const distributionPercentages = {
-    1: 20,
-    2: 15,
-    3: 10,
+    1: 12,
+    2: 8,
+    3: 4,
   };
-
-  // Return the distribution percentage for the given level
   return distributionPercentages[level] || 0;
 }
 
@@ -79,26 +71,66 @@ function getDistributionPercentage(level) {
  * Check if a user has an active package
  */
 async function hasPackage(userId) {
-  const package = await Packages.findOne({ userId, status: "Active" });
-  return package !== null;
+  const pkg = await Packages.findOne({ userId, status: "Active" });
+  return pkg !== null;
 }
 
 /**
- * Validate the number of active directs for a user at a given level
+ * Validate active directs against your Bonus rules:
+ *
+ * Level 1 => need ≥2 direct actives, and ≥1 in level-2
+ * Level 2 => need ≥2 in level-1, ≥4 in level-2, and ≥1 in level-3
+ * Level 3 => need ≥2 in level-1, ≥6 in level-2, and ≥1 in level-3
  */
 async function validateActiveDirect(userId, level) {
-  // Get the number of direct referrers with an active package
-  const directReferrers = await User.find({ referrer: userId });
-  const activeDirects = await Promise.all(
-    directReferrers.map(async (referrer) => {
-      const isActive = await hasPackage(referrer.userId);
-      return isActive;
-    })
-  );
+  // 1) Level-1 actives
+  const directRefs = await User.find({ referrer: userId });
+  const level1 = [];
+  for (const u of directRefs) {
+    if (await hasPackage(u.userId)) level1.push(u.userId);
+  }
+  const l1Count = level1.length;
 
-  // Check if the number of active directs meets the level requirement
-  const activeDirectCount = activeDirects.filter(Boolean).length;
-  return activeDirectCount >= level * 2;
+  // 2) Level-2 actives
+  const level2Set = new Set();
+  for (const id1 of level1) {
+    const children = await User.find({ referrer: id1 });
+    for (const c of children) {
+      if (await hasPackage(c.userId)) {
+        level2Set.add(c.userId);
+      }
+    }
+  }
+  const l2Count = level2Set.size;
+
+  // 3) Level-3 actives
+  const level3Set = new Set();
+  for (const id2 of level2Set) {
+    const children = await User.find({ referrer: id2 });
+    for (const c of children) {
+      if (await hasPackage(c.userId)) {
+        level3Set.add(c.userId);
+      }
+    }
+  }
+  const l3Count = level3Set.size;
+
+  // Define your thresholds per level
+  let req = {};
+  if (level === 1) {
+    req = { l1: 2, l2: 1 };
+  } else if (level === 2) {
+    req = { l1: 2, l2: 4, l3: 1 };
+  } else if (level === 3) {
+    req = { l1: 2, l2: 6, l3: 1 };
+  } else {
+    return false;
+  }
+
+  if (l1Count < req.l1) return false;
+  if (req.l2 != null && l2Count < req.l2) return false;
+  if (req.l3 != null && l3Count < req.l3) return false;
+  return true;
 }
 
 module.exports = {

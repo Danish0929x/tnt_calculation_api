@@ -11,7 +11,7 @@ async function DailyBonus() {
     console.log("Starting Daily Bonus distribution...");
 
     const activePackages = await Packages.find({
-      status: "Active",
+      status: "Active"
     });
 
     const totalPackages = activePackages.length; // Total number of packages
